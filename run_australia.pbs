@@ -1,0 +1,18 @@
+#!/bin/bash
+#PBS -N rainfall_au
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=48GB
+#PBS -l walltime=04:00:00
+#PBS -l storage=scratch/no50+gdata/no50
+#PBS -P no50
+#PBS -j oe
+#PBS -o /scratch/no50/nk4326/rainfall_au/logs/train.log
+
+module load python3/3.11.7
+source /scratch/no50/nk4326/venvs/rainfall/bin/activate
+
+cd /scratch/no50/nk4326/rainfall_au
+
+python3 train_australia.py

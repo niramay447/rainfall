@@ -1,0 +1,23 @@
+# Clean requirements for NCI Gadi (Linux x86_64)
+# torch + torch-geometric are installed separately in the setup step
+
+pandas
+numpy
+scikit-learn
+scipy
+networkx
+PyYAML
+matplotlib
+rasterio
+geopandas
+geopy
+PyKrige
+gstools
+xarray
+tqdm
+shapely
+pyproj
+fiona
+contextily
+folium
+requests
