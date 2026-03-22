@@ -1,0 +1,59 @@
+#!/bin/bash
+#PBS -N rainfall_sweep
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=48GB
+#PBS -l walltime=08:00:00
+#PBS -l storage=scratch/no50+gdata/no50
+#PBS -P no50
+#PBS -j oe
+#PBS -o /scratch/no50/nk4326/rainfall_au/logs/sweep_^array_index^.log
+#PBS -J 1-9
+
+# ── Experiment grid (one row per job index) ───────────────────────────────────
+#
+#  Axis swept (all others fixed at baseline):
+#  Baseline: hidden=32  layers=4  knn=5  lr=0.001
+#
+#  Index | hidden | layers | knn | lr      | what changes
+#  ------|--------|--------|-----|---------|----------------------------
+#    1   |  32    |   4    |  5  | 0.001   | baseline
+#    2   |  16    |   4    |  5  | 0.001   | smaller model
+#    3   |  64    |   4    |  5  | 0.001   | larger model
+#    4   |  32    |   2    |  5  | 0.001   | shallower
+#    5   |  32    |   8    |  5  | 0.001   | deeper
+#    6   |  32    |   4    |  3  | 0.001   | fewer neighbours
+#    7   |  32    |   4    |  8  | 0.001   | more neighbours
+#    8   |  32    |   4    |  5  | 0.005   | higher lr
+#    9   |  32    |   4    |  5  | 0.0001  | lower lr
+
+HIDDEN=(  32  16  64  32  32  32  32  32    32)
+LAYERS=(   4   4   4   2   8   4   4   4     4)
+KNN=(      5   5   5   5   5   3   8   5     5)
+LR=(   0.001 0.001 0.001 0.001 0.001 0.001 0.001 0.005 0.0001)
+
+IDX=$((PBS_ARRAY_INDEX - 1))
+
+H=${HIDDEN[$IDX]}
+L=${LAYERS[$IDX]}
+K=${KNN[$IDX]}
+R=${LR[$IDX]}
+
+module load python3/3.11.7
+source /scratch/no50/nk4326/venvs/rainfall/bin/activate
+
+cd /scratch/no50/nk4326/rainfall_au
+
+echo "======================================================"
+echo "Job array index : ${PBS_ARRAY_INDEX}"
+echo "Config          : hidden=${H}  layers=${L}  knn=${K}  lr=${R}"
+echo "======================================================"
+
+python3 train_australia.py \
+    --hidden_channels ${H} \
+    --num_layers      ${L} \
+    --knn             ${K} \
+    --lr              ${R} \
+    --epochs          150  \
+    --patience        20

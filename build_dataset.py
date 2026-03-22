@@ -113,6 +113,13 @@ def resample_to_hourly(df: pd.DataFrame, hourly_range: pd.DatetimeIndex) -> pd.D
     df.set_index("timestamp", inplace=True)
     hourly = df.resample("h").sum()
     hourly = hourly.reindex(hourly_range, fill_value=0)
+
+    # Mark hours with physically impossible totals as NaN (sensor malfunction).
+    # A real 0.5 mm tipping bucket cannot tip faster than once every ~6 seconds,
+    # so any hourly sum above 300 tips × 0.5 mm = 150 mm implies a stuck sensor.
+    # NaN preserves the distinction between "no rain" (0.0) and "bad data" (NaN).
+    hourly.loc[hourly["rainfall_mm"] > 150.0, "rainfall_mm"] = float("nan")
+
     hourly.reset_index(inplace=True)
     hourly.columns = ["timestamp", "rainfall_mm"]
     return hourly
@@ -153,6 +160,16 @@ def build_dataset(
         freq="h",
     )
 
+    # Deduplicate station IDs — duplicates cause the same data to be added twice
+    original_count = len(station_ids)
+    station_ids = list(dict.fromkeys(station_ids))
+    if len(station_ids) < original_count:
+        print(f"⚠  Removed {original_count - len(station_ids)} duplicate station IDs")
+
+    # Threshold above which an hourly total is treated as a sensor malfunction.
+    # Matches the NaN logic in resample_to_hourly() — keeps cache loading consistent.
+    MAX_HOURLY_MM = 150
+
     all_data   = []
     successful = failed = skipped = 0
     n = len(station_ids)
@@ -168,6 +185,9 @@ def build_dataset(
             print(f"[{i:>3}/{n}] {station}  — already downloaded, loading from disk")
             hourly_df = pd.read_csv(out_path)
             hourly_df["station_id"] = station
+            # NaN any values that exceed the physical maximum (sensor malfunction guard
+            # for cached files built by older versions of this script)
+            hourly_df.loc[hourly_df["rainfall_mm"] > MAX_HOURLY_MM, "rainfall_mm"] = float("nan")
             all_data.append(hourly_df[["timestamp", "station_id", "rainfall_mm"]])
             skipped += 1
             continue

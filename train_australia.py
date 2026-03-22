@@ -1,5 +1,6 @@
 from src.sampling.main import stratified_spatial_kfold_dual  # must be first import
 
+import argparse
 import torch
 import os
 import time
@@ -14,182 +15,188 @@ from torch_geometric.transforms import ToUndirected
 from src.performance_logger import PerformanceLogger
 from models.gnn import GNNInductiveHetero
 from src.utils import read_config
-from src.raingauge.australia_utils import load_australia_raingauge_dataset  # AU loader
-# from src.raingauge.utils import load_raingauge_dataset  # Singapore loader (not used)
-# from src.radar.utils import load_radar_dataset           # Radar (not used yet)
+from src.raingauge.australia_utils import load_australia_raingauge_dataset
 from training.logic_hetero import train_epoch, validate, test_model
-# from src.graph.gaugegraph import GaugeGraph              # legacy (not used)
-# from src.graph.radargraph import RadarGraph              # Radar (not used yet)
 from src.graph.gaugegraphnew import GaugeGraphNew, HeterogeneousWeatherGraphDatasetInductive
 
 
+# ── CLI arguments ─────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Train GNN on Australian rain gauge data")
+parser.add_argument("--hidden_channels", type=int,   default=32)
+parser.add_argument("--num_layers",      type=int,   default=4)
+parser.add_argument("--knn",             type=int,   default=5)
+parser.add_argument("--lr",              type=float, default=0.001)
+parser.add_argument("--epochs",          type=int,   default=100)
+parser.add_argument("--patience",        type=int,   default=20,
+                    help="Early stopping patience (epochs without val improvement)")
+parser.add_argument("--fold_count",      type=int,   default=None,
+                    help="Override fold_count from config (e.g. 1 for quick test)")
+parser.add_argument("--data_fraction",   type=float, default=1.0,
+                    help="Fraction of timesteps to use (0.01 = 1%% for smoke test)")
+parser.add_argument("--experiment_name", type=str,   default=None,
+                    help="Custom experiment name (default: auto-generated timestamp)")
+args = parser.parse_args()
+
+# ── Config ────────────────────────────────────────────────────────────────────
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 config = read_config('config.yaml')
-batch_size = config['training_params']['batch_size']
-fold_count = config['training_params']['fold_count']
 
-experiment_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_australia"
+batch_size  = config['training_params']['batch_size']
+fold_count  = args.fold_count if args.fold_count is not None \
+              else config['training_params']['fold_count']
+
+# Build a descriptive experiment name that encodes the hyperparameters
+if args.experiment_name:
+    experiment_name = args.experiment_name
+else:
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    experiment_name = (
+        f"{ts}_australia"
+        f"_h{args.hidden_channels}"
+        f"_l{args.num_layers}"
+        f"_k{args.knn}"
+        f"_lr{args.lr}"
+    )
+    if args.data_fraction < 1.0:
+        experiment_name += f"_frac{args.data_fraction}"
+
 os.makedirs(f"experiments/{experiment_name}", exist_ok=True)
 perf = PerformanceLogger(f"experiments/{experiment_name}/training_log.jsonl")
 
-uptime_threshold = config['filters']['uptime_threshold']
+print(f"Experiment : {experiment_name}")
+print(f"Device     : {device}")
+print(f"hidden     : {args.hidden_channels}  layers: {args.num_layers}  "
+      f"knn: {args.knn}  lr: {args.lr}  epochs: {args.epochs}  "
+      f"patience: {args.patience}  folds: {fold_count}")
+if args.data_fraction < 1.0:
+    print(f"Data fraction: {args.data_fraction:.1%}  (smoke-test mode)")
+print()
 
-# ── Load Australian raingauge data ───────────────────────────────────────────
+# ── Load Australian raingauge data ────────────────────────────────────────────
 au_cfg = config['australia']
 raingauge_df, raingauge_station_mappings_df = load_australia_raingauge_dataset(
     csv_path=au_cfg['dataset_path'],
     metadata_path=au_cfg['station_metadata_path'],
-    uptime_threshold=uptime_threshold,
+    uptime_threshold=config['filters']['uptime_threshold'],
 )
 
-# ── Radar / satellite loading (not used yet – commented out) ─────────────────
-# radar_df = load_radar_dataset(folder_name='database/au_radar_data', cropped=True)
+# NOTE: do NOT fillna(0) here — NaN values carry sensor-malfunction information
+# that fill_heterodata() uses to set validity=0 for bad readings.
+# The fillna(0) is handled inside GaugeGraphNew.fill_heterodata().
 
-raingauge_df = raingauge_df.fillna(0)
+# ── Optional: trim to a fraction of timesteps (smoke-test mode) ───────────────
+if args.data_fraction < 1.0:
+    n_steps = max(1, int(len(raingauge_df) * args.data_fraction))
+    raingauge_df = raingauge_df.iloc[:n_steps]
+    print(f"Trimmed to {n_steps:,} timesteps ({raingauge_df.index[0]} → {raingauge_df.index[-1]})")
 
-# ── Spatial K-fold split ─────────────────────────────────────────────────────
+# ── Spatial K-fold split ──────────────────────────────────────────────────────
 split_info = stratified_spatial_kfold_dual(
     raingauge_station_mappings_df, seed=123, plot=False, n_splits=fold_count
 )
-
-# ── Radar/raingauge merge (not used yet – commented out) ─────────────────────
-# radar_cols = radar_df.columns
-# raingauge_cols = raingauge_df.columns
-# merged_df = radar_df.join(raingauge_df, on='timestamp', how='inner')
-# radar_df = merged_df[radar_cols]
-# raingauge_df = merged_df[raingauge_cols]
 
 # ── Build gauge graphs for each fold ─────────────────────────────────────────
 gauge_graph_arr = []
 for i in range(fold_count):
     gauge_graph = GaugeGraphNew(
-        raingauge_df, raingauge_station_mappings_df, split_info=split_info[i], knn=5
+        raingauge_df, raingauge_station_mappings_df,
+        split_info=split_info[i], knn=args.knn,
     )
     gauge_graph_arr.append(gauge_graph)
 
-# ── Build models ─────────────────────────────────────────────────────────────
-hidden_channels = 8
-out_channels = 1
-num_layers = 8
+# ── Build models ──────────────────────────────────────────────────────────────
 model_arr = []
 for i in range(fold_count):
     model_arr.append(
         GNNInductiveHetero(
             in_channels_dict={"raingauge": 4},  # rainfall | validity | month_sin | month_cos
-            hidden_channels=hidden_channels,
-            out_channels=out_channels,
-            num_layers=num_layers,
+            hidden_channels=args.hidden_channels,
+            out_channels=1,
+            num_layers=args.num_layers,
             edge_types=gauge_graph_arr[i].get_train_heterodata().edge_types,
         ).to(device=device)
     )
 
 # ── Build data loaders ────────────────────────────────────────────────────────
-train_loader_arr = []
-val_loader_arr = []
-test_loader_arr = []
+train_loader_arr, val_loader_arr, test_loader_arr = [], [], []
 for i in range(fold_count):
-    train_loader = GeometricDataLoader(
+    train_loader_arr.append(GeometricDataLoader(
         HeterogeneousWeatherGraphDatasetInductive(gauge_graph_arr[i].get_train_heterodata()),
-        batch_size=batch_size,
-        shuffle=False,
-    )
-    val_loader = GeometricDataLoader(
+        batch_size=batch_size, shuffle=False,
+    ))
+    val_loader_arr.append(GeometricDataLoader(
         HeterogeneousWeatherGraphDatasetInductive(gauge_graph_arr[i].get_validation_heterodata()),
-        batch_size=batch_size,
-        shuffle=False,
-    )
-    test_loader = GeometricDataLoader(
+        batch_size=batch_size, shuffle=False,
+    ))
+    test_loader_arr.append(GeometricDataLoader(
         HeterogeneousWeatherGraphDatasetInductive(gauge_graph_arr[i].get_test_heterodata()),
-        batch_size=batch_size,
-        shuffle=False,
-    )
-    train_loader_arr.append(train_loader)
-    val_loader_arr.append(val_loader)
-    test_loader_arr.append(test_loader)
+        batch_size=batch_size, shuffle=False,
+    ))
 
 
 def train_fold(model, train_loader, val_loader, fold, device="cpu"):
-    print("Training")
-    print(f"Device type: {device}")
-    first_param = next(model.parameters())
-    print(f"Initial weight sample: {first_param.data.flatten()[:5]}")
+    print(f"\n{'='*60}")
+    print(f"FOLD {fold}")
+    print(f"{'='*60}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
-    training_loss_arr = []
-    validation_loss_arr = []
-    early = 0
-    mini = 1000
-    stopping_condition = 5
-    epochs = 0
-    total_epochs = 10
-    print(f"-----FOLD: {fold}-----")
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    training_loss_arr, validation_loss_arr = [], []
+    best_val = float("inf")
+    patience_counter = 0
     training_start = time.time()
-    for i in range(total_epochs):
+
+    for epoch in range(args.epochs):
         epoch_start = time.time()
-        print(f"-----EPOCH: {i + 1}-----")
 
         train_loss = train_epoch(
-            model,
-            train_loader,
-            optimizer,
-            device,
-            verbose=False,
-            random_noise_masking=False,
+            model, train_loader, optimizer, device,
+            verbose=False, random_noise_masking=False,
         )
-        print(train_loss)
+        val_loss = validate(model, val_loader, device)
 
-        validation_loss = validate(model, val_loader, device)
         training_loss_arr.append(train_loss)
-        validation_loss_arr.append(validation_loss)
-        perf.log_epoch(i, train_loss, validation_loss)
-        if mini >= validation_loss:
-            mini = validation_loss
-            early = 0
+        validation_loss_arr.append(val_loss)
+        perf.log_epoch(epoch, train_loss, val_loss)
+
+        # Early stopping
+        if val_loss < best_val:
+            best_val = val_loss
+            patience_counter = 0
+            torch.save(
+                model.state_dict(),
+                f"experiments/{experiment_name}/best_model_fold{fold}.pth",
+            )
         else:
-            early += 1
-        epochs += 1
-        if early >= stopping_condition:
-            print("Early stop")
+            patience_counter += 1
+
+        epoch_time = time.time() - epoch_start
+        print(f"Epoch {epoch+1:>3}/{args.epochs}  "
+              f"train={train_loss:.4f}  val={val_loss:.4f}  "
+              f"patience={patience_counter}/{args.patience}  "
+              f"({epoch_time:.1f}s)")
+
+        if patience_counter >= args.patience:
+            print(f"Early stop at epoch {epoch+1}")
             break
 
-        print(f"Train Loss: {train_loss:.4f}")
-        print(f"Validation Loss: {validation_loss:.4f}")
-
-        total_norm = 0
-        for p in model.parameters():
-            if p.grad is not None:
-                total_norm += p.grad.data.norm(2).item() ** 2
-        total_norm = total_norm ** 0.5
-        print(f"Gradient norm: {total_norm:.6f}")
-        epoch_end = time.time()
-        print(f"epoch {i} took {epoch_end - epoch_start}")
-
-    training_end = time.time()
-    total_time = training_end - training_start
+    total_time = time.time() - training_start
     perf.finalise(total_time)
-    print(f"Training took {total_time} seconds over {epochs} epochs")
+    print(f"\nFold {fold} done in {total_time:.1f}s  |  best val loss: {best_val:.4f}")
 
-    plt.plot(training_loss_arr, label="training_loss", color="blue")
-    plt.plot(validation_loss_arr, label="validation_loss", color="red")
+    plt.figure()
+    plt.plot(training_loss_arr,   label="train",      color="blue")
+    plt.plot(validation_loss_arr, label="validation", color="red")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title(f"Fold {fold} — {experiment_name}")
     plt.legend()
-    plt.savefig(f"experiments/{experiment_name}/train_loss_plot_{fold}.png", dpi=300)
+    plt.savefig(f"experiments/{experiment_name}/loss_fold{fold}.png", dpi=150)
     plt.close()
 
-    torch.save(
-        model.state_dict(),
-        f"experiments/{experiment_name}/weather_gnn_best_{fold}.pth",
-    )
-    print("model weights saved")
 
-
+# ── Run all folds ─────────────────────────────────────────────────────────────
 for i in range(fold_count):
-    train_fold(
-        model_arr[i],
-        train_loader=train_loader_arr[i],
-        val_loader=val_loader_arr[i],
-        fold=i,
-        device=device,
-    )
+    train_fold(model_arr[i], train_loader_arr[i], val_loader_arr[i], fold=i, device=device)
     RMSE = test_model(
         model_arr[i],
         raingauge_station_mappings_df,
