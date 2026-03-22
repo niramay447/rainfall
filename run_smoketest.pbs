@@ -1,9 +1,9 @@
 #!/bin/bash
 #PBS -N rainfall_smoketest
 #PBS -q gpuvolta
-#PBS -l ncpus=4
+#PBS -l ncpus=12
 #PBS -l ngpus=1
-#PBS -l mem=16GB
+#PBS -l mem=48GB
 #PBS -l walltime=00:30:00
 #PBS -l storage=scratch/no50+gdata/no50
 #PBS -P no50
