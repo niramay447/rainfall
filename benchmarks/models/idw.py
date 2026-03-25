@@ -118,8 +118,8 @@ def run_IDW_benchmark(raingauge_data: pd.DataFrame,
     timestep_RMSE_arr = np.sqrt(np.array(timestep_MSE_arr))
     average_timestep_RMSE = np.mean(timestep_RMSE_arr)
 
-    actual_values_arr = np.concat(actual_values_list) #This is a 2d array of no. timestamps *
-    predicted_values_arr = np.concat(predicted_values_list)
+    actual_values_arr = np.concatenate(actual_values_list)
+    predicted_values_arr = np.concatenate(predicted_values_list)
 
     # Remove any NaN values
     mask = ~(np.isnan(actual_values_arr) | np.isnan(predicted_values_arr))
@@ -141,6 +141,7 @@ def run_IDW_benchmark(raingauge_data: pd.DataFrame,
     print(f"Average RMSE loss: {average_RMSE_loss:.4f} mm/hr")
     print(f"Average RMSE per timestep: {average_timestep_RMSE:.4f} mm/hr")
     print(f"Average MSE loss: {average_MSE_loss:.4f} mm²/hr²")
+    print(f"Pearson r: {pearson_r:.4f}  (p={pearson_p:.3e})")
     print(f"Time taken: {time_taken:.2f} seconds")
     print(f"Number of predictions: {len(actual_values_arr)}")
 
@@ -163,4 +164,4 @@ def run_IDW_benchmark(raingauge_data: pd.DataFrame,
         plt.savefig(f'idw_results/plot{fold}.png')
 
 
-    return average_RMSE_loss
+    return average_RMSE_loss, pearson_r

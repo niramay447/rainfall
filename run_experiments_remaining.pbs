@@ -1,0 +1,51 @@
+#!/bin/bash
+#PBS -N rainfall_remaining
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=48GB
+#PBS -l walltime=24:00:00
+#PBS -l storage=scratch/no50+gdata/no50
+#PBS -P no50
+#PBS -j oe
+#PBS -o /scratch/no50/nk4326/rainfall_au/logs/remaining_^array_index^.log
+#PBS -J 1-3
+#PBS -r y
+
+# ── Remaining 3 configs that exceeded 8h walltime ─────────────────────────────
+#
+#  Index | hidden | layers | knn | lr      | what changes
+#  ------|--------|--------|-----|---------|----------------------------
+#    1   |  64    |   4    |  5  | 0.001   | larger model
+#    2   |  32    |   8    |  5  | 0.001   | deeper
+#    3   |  32    |   4    |  8  | 0.001   | more neighbours
+
+HIDDEN=(64  32  32)
+LAYERS=( 4   8   4)
+KNN=(    5   5   8)
+LR=(0.001 0.001 0.001)
+
+IDX=$((PBS_ARRAY_INDEX - 1))
+
+H=${HIDDEN[$IDX]}
+L=${LAYERS[$IDX]}
+K=${KNN[$IDX]}
+R=${LR[$IDX]}
+
+module load python3/3.11.7
+source /scratch/no50/nk4326/venvs/rainfall/bin/activate
+
+cd /scratch/no50/nk4326/rainfall_au
+
+echo "======================================================"
+echo "Job array index : ${PBS_ARRAY_INDEX}"
+echo "Config          : hidden=${H}  layers=${L}  knn=${K}  lr=${R}"
+echo "======================================================"
+
+python3 train_australia.py \
+    --hidden_channels ${H} \
+    --num_layers      ${L} \
+    --knn             ${K} \
+    --lr              ${R} \
+    --epochs          150  \
+    --patience        20

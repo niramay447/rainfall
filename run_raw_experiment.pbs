@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N rainfall_raw
+#PBS -q gpuvolta
+#PBS -l ncpus=12
+#PBS -l ngpus=1
+#PBS -l mem=48GB
+#PBS -l walltime=12:00:00
+#PBS -l storage=scratch/no50+gdata/no50
+#PBS -P no50
+#PBS -j oe
+#PBS -o /scratch/no50/nk4326/rainfall_au/logs/raw_experiment.log
+#PBS -r y
+
+# Raw MSE experiment — no log1p transform
+# Best config from log1p sweep: hidden=32, layers=4, knn=5, lr=0.005
+
+module load python3/3.11.7
+source /scratch/no50/nk4326/venvs/rainfall/bin/activate
+
+cd /scratch/no50/nk4326/rainfall_au
+
+echo "======================================================"
+echo "RAW experiment: no log1p transform"
+echo "Config: hidden=32  layers=4  knn=5  lr=0.005"
+echo "======================================================"
+
+python3 train_australia_raw.py \
+    --hidden_channels 32  \
+    --num_layers      4   \
+    --knn             5   \
+    --lr              0.005 \
+    --epochs          150  \
+    --patience        20
